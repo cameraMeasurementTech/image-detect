@@ -1,0 +1,67 @@
+# Phase-3: stronger single backbone (ConvNeXt) toward BMF A1; ensemble hooks ready.
+
+experiment_name: convnext_phase3
+seed: 42
+
+cache_dir: ~/.cache/sn34-miner/image
+index_path: ~/.cache/sn34-miner/image/index.jsonl
+
+registries:
+  - https://raw.githubusercontent.com/BitMind-AI/gasbench/main/src/gasbench/dataset/configs/real_images.yaml
+  - https://raw.githubusercontent.com/BitMind-AI/gasbench/main/src/gasbench/dataset/configs/synthetic_images.yaml
+
+gas_station:
+  enabled: true
+  path: gasstation/gs-images-v4
+  media_type: synthetic
+  max_samples: 50000
+  weeks: null
+
+model:
+  # BMF A1-style branch; swap to ensemble via --ensemble flag in train.py
+  backbone: facebook/convnext-base-224-22k
+  num_classes: 3
+  image_size: 224
+  label_smoothing: 0.1
+  fit_temperature: true
+  ensemble:
+    enabled: false
+    branches:
+      - name: convnext
+        backbone: facebook/convnext-base-224-22k
+        weight: 0.5
+      - name: vit
+        backbone: google/vit-base-patch16-224-in21k
+        weight: 0.5
+
+data:
+  max_per_source: 2500
+  val_source_fraction: 0.1
+  stratify_by: generator_family
+  num_workers: 4
+  robustness_aug_prob: 0.5
+
+train:
+  output_dir: runs/convnext_phase3
+  num_epochs: 6
+  train_batch_size: 16
+  eval_batch_size: 32
+  learning_rate: 1.0e-5
+  weight_decay: 0.05
+  warmup_ratio: 0.05
+  logging_steps: 50
+  early_stop_patience: 2
+  metric_for_best: sn34_score
+  # Only burn/push when local proxy clears king + margin
+  king_sn34_score: null
+  push_margin: 0.015
+
+export:
+  submission_dir: submission
+  zip_path: submission/image_detector.zip
+  resize: [224, 224]
+
+eval:
+  gasbench_cmd: gasbench
+  small_timeout_s: 5100
+  full_timeout_s: 18000

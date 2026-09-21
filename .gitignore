@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+.cache_yaml_test/
+.cache/
+runs/
+*.pt
+*.safetensors
+submission/model.*
+submission/config.json
+submission/image_detector.zip
+submission/model_config.yaml
+submission/model.py
+.DS_Store
+*.egg-info/
+dist/
+build/

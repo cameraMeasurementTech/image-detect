@@ -1,0 +1,55 @@
+# Phase-2: public registries + GAS-Station + robustness augs + calibration focus.
+
+experiment_name: vit_phase2_gasstation
+seed: 42
+
+cache_dir: ~/.cache/sn34-miner/image
+index_path: ~/.cache/sn34-miner/image/index.jsonl
+
+registries:
+  - https://raw.githubusercontent.com/BitMind-AI/gasbench/main/src/gasbench/dataset/configs/real_images.yaml
+  - https://raw.githubusercontent.com/BitMind-AI/gasbench/main/src/gasbench/dataset/configs/synthetic_images.yaml
+
+gas_station:
+  enabled: true
+  path: gasstation/gs-images-v4
+  media_type: synthetic
+  max_samples: 50000
+  weeks: null
+
+model:
+  backbone: google/vit-base-patch16-224-in21k
+  num_classes: 3
+  image_size: 224
+  label_smoothing: 0.1
+  # Post-hoc temperature fit on val set after train
+  fit_temperature: true
+
+data:
+  max_per_source: 2000
+  val_source_fraction: 0.1
+  stratify_by: generator_family
+  num_workers: 4
+  robustness_aug_prob: 0.5
+
+train:
+  output_dir: runs/vit_phase2
+  num_epochs: 5
+  train_batch_size: 32
+  eval_batch_size: 64
+  learning_rate: 1.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  logging_steps: 50
+  early_stop_patience: 2
+  metric_for_best: sn34_score
+
+export:
+  submission_dir: submission
+  zip_path: submission/image_detector.zip
+  resize: [224, 224]
+
+eval:
+  gasbench_cmd: gasbench
+  small_timeout_s: 5100
+  full_timeout_s: 18000

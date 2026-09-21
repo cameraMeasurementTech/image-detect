@@ -1,0 +1,26 @@
+# Local SN34 image eval (gasbench-equivalent scoring on a local index).
+# Private holdouts are not available; this is an upper bound on the network bench.
+
+index_path: ~/.cache/sn34-miner/image/index.jsonl
+model_dir: submission
+
+# small = <=100 images per dataset (entrance-exam analogue, pass if accuracy >= 0.80)
+# full  = every indexed image
+mode: small
+batch_size: 32
+seed: 42
+
+# Blend (1-w)*base + w*aug. Network w is a round config; 0 disables the aug pass.
+aug_weight: 0.0
+
+# Target score shares. Missing buckets are renormalized.
+# Holdout cannot be filled locally.
+shares:
+  public: 0.7
+  gas_station: 0.3
+
+# Set to the sitting king's sn34_score to test the +0.01 dethrone rule.
+king_sn34: null
+koth_margin: 0.01
+
+out: runs/local_sn34_report.json
