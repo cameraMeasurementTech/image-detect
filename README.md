@@ -48,36 +48,75 @@ cd /home/ai-image-detection
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
+# Pick where everything lands (downloads, index, runs, submission zip)
+DATA=/mnt/data/sn34          # change to any path you own
+mkdir -p "$DATA" "$DATA/runs" "$DATA/submission"
+
 # Registry summary (no download)
-python scripts/build_index.py --summarize-only
+python scripts/build_index.py --summarize-only --data-dir "$DATA"
 
 # Smoke tests (metrics / split / export)
 python scripts/smoke_test.py
 
 # Phase 1 — smoke train on a few datasets
 python -m src.train --config configs/train_vit_phase1.yaml \
+  --data-dir "$DATA" \
+  --output-dir "$DATA/runs/vit_phase1" \
+  --submission-dir "$DATA/submission" \
+  --zip-path "$DATA/submission/image_detector.zip" \
   --dataset-limit 4 --max-per-source 64 --rebuild-index
 
 # Phase 1 — full public registries (long; large disk/bandwidth)
-python -m src.train --config configs/train_vit_phase1.yaml --rebuild-index
+python -m src.train --config configs/train_vit_phase1.yaml \
+  --data-dir "$DATA" --output-dir "$DATA/runs/vit_phase1" --rebuild-index
 
 # Phase 2 — + GAS-Station + robustness augs
-python -m src.train --config configs/train_vit_phase2.yaml --rebuild-index
+python -m src.train --config configs/train_vit_phase2.yaml \
+  --data-dir "$DATA" --output-dir "$DATA/runs/vit_phase2" --rebuild-index
 
 # Phase 3 — ConvNeXt / stronger backbone
-python -m src.train --config configs/train_ensemble_phase3.yaml --rebuild-index
+python -m src.train --config configs/train_ensemble_phase3.yaml \
+  --data-dir "$DATA" --output-dir "$DATA/runs/convnext_phase3" --rebuild-index
 
-# Local gasbench gates (requires a built index from scripts/build_index.py)
-python -m src.eval_local --config configs/eval_local.yaml --mode small
-python -m src.eval_local --config configs/eval_local.yaml --mode full
+# Local gasbench gates (same index / model paths)
+python -m src.eval_local --config configs/eval_local.yaml \
+  --data-dir "$DATA" --model-dir "$DATA/submission" --mode small \
+  --out "$DATA/runs/local_sn34_small.json"
+python -m src.eval_local --config configs/eval_local.yaml \
+  --data-dir "$DATA" --model-dir "$DATA/submission" --mode full \
+  --out "$DATA/runs/local_sn34_full.json"
 
 # Optional: the upstream gasbench CLI, if installed
-python -m src.eval_local --use-gasbench --mode small --model-dir submission
+python -m src.eval_local --use-gasbench --mode small --model-dir "$DATA/submission"
 
 # Push when local proxy clears king + margin (set king_sn34_score in config)
-python scripts/push_model.py --zip submission/image_detector.zip --require-push-ready
+python scripts/push_model.py --zip "$DATA/submission/image_detector.zip" --require-push-ready
 ```
 
+## Where data is saved
+
+Every download / index / train / eval command accepts path flags (CLI overrides YAML):
+
+| Flag | What it controls |
+|------|------------------|
+| `--data-dir DIR` | Root for HF downloads + default `DIR/index.jsonl` |
+| `--cache-dir DIR` | Download cache only (overrides `--data-dir` for cache) |
+| `--index-path FILE` | Sample index JSONL read/write path |
+| `--output-dir DIR` | Checkpoints + `train_result.json` |
+| `--submission-dir DIR` | Exported `model_config.yaml` / `model.py` / weights |
+| `--zip-path FILE` | Packed `image_detector.zip` |
+| `--out FILE` | Eval report JSON (`eval_local` only) |
+
+`--data-dir /path` alone is enough for most workflows:
+
+```text
+/path/
+  hf/ ...          # HuggingFace dataset cache
+  yaml/ ...        # registry YAML cache
+  index.jsonl      # sample index
+```
+
+Then point train/eval outputs separately with `--output-dir`, `--submission-dir`, `--zip-path`, and `--out`.
 ## Layout
 
 ```
@@ -104,13 +143,14 @@ Validators do not run your model. GAS/gasbench does, then validators copy the re
 - `king_sn34` checks the dethrone rule: local `sn34_score` ≥ king + 0.01.
 
 ```bash
-python scripts/build_index.py --config configs/train_vit_phase1.yaml
-python -m src.eval_local --config configs/eval_local.yaml --mode small
+python scripts/build_index.py --config configs/train_vit_phase1.yaml --data-dir "$DATA"
+python -m src.eval_local --config configs/eval_local.yaml \
+  --data-dir "$DATA" --model-dir "$DATA/submission" --mode small \
+  --out "$DATA/runs/local_sn34_small.json"
 python scripts/test_local_eval.py
 ```
 
-Report JSON is written to `runs/local_sn34_report.json` (overall metrics plus per-dataset accuracy).
-
+Report JSON defaults to `runs/local_sn34_report.json` unless `--out` is set.
 ## Gates reminder
 
 1. 3-class logits, uint8 `[B,3,H,W]` in  

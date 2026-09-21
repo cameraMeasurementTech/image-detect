@@ -6,4 +6,4 @@ cd "$ROOT"
 # shellcheck disable=SC1091
 source .venv/bin/activate
 python -m src.train --config configs/train_vit_phase2.yaml "$@"
-python -m src.eval_local --config configs/train_vit_phase2.yaml --mode small --model-dir submission || true
+python -m src.eval_local --config configs/train_vit_phase2.yaml --mode small --model-dir submission "$@" || true

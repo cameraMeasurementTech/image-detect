@@ -351,16 +351,38 @@ def parse_args():
         default=None,
         help="Override max images per source",
     )
+    from src.paths import add_path_arguments
+
+    add_path_arguments(p)
     return p.parse_args()
 
 
 def main():
     args = parse_args()
     cfg = load_config(Path(args.config))
+    from src.paths import apply_path_overrides
+
+    apply_path_overrides(
+        cfg,
+        data_dir=args.data_dir,
+        cache_dir=args.cache_dir,
+        index_path=args.index_path,
+        output_dir=args.output_dir,
+        submission_dir=args.submission_dir,
+        zip_path=args.zip_path,
+    )
     if args.dataset_limit is not None:
         cfg.setdefault("data", {})["dataset_limit"] = args.dataset_limit
     if args.max_per_source is not None:
         cfg.setdefault("data", {})["max_per_source"] = args.max_per_source
+    logger.info(
+        "Paths: cache_dir=%s index_path=%s output_dir=%s submission_dir=%s zip_path=%s",
+        cfg.get("cache_dir"),
+        cfg.get("index_path"),
+        (cfg.get("train") or {}).get("output_dir"),
+        (cfg.get("export") or {}).get("submission_dir"),
+        (cfg.get("export") or {}).get("zip_path"),
+    )
     result = train_loop(cfg, rebuild_index=args.rebuild_index)
     print(json.dumps({k: v for k, v in result.items() if k != "history"}, indent=2))
 

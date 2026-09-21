@@ -129,18 +129,23 @@ def parse_args():
     )
     p.add_argument("--config", default=str(ROOT / "configs/eval_local.yaml"))
     p.add_argument("--model-dir", default=None)
-    p.add_argument("--index", default=None)
+    p.add_argument("--index", default=None, help="Alias for --index-path")
     p.add_argument("--mode", choices=["small", "full"], default=None)
     p.add_argument("--batch-size", type=int, default=None)
     p.add_argument("--aug-weight", type=float, default=None)
     p.add_argument("--king-sn34", type=float, default=None)
-    p.add_argument("--out", default=None)
+    p.add_argument("--out", default=None, help="Eval report JSON path")
     p.add_argument(
         "--use-gasbench",
         action="store_true",
         help="Shell out to the gasbench CLI instead of the local scorer",
     )
-    return p.parse_args()
+    from src.paths import add_path_arguments
+
+    add_path_arguments(p)
+    # Allow train-only flags (e.g. --rebuild-index) when shell wrappers forward "$@"
+    args, _unknown = p.parse_known_args()
+    return args
 
 
 def _cfg_value(cli, cfg, key, default=None):
@@ -152,13 +157,32 @@ def _cfg_value(cli, cfg, key, default=None):
 def main():
     args = parse_args()
     cfg = load_config(Path(args.config)) if Path(args.config).exists() else {}
+    from src.paths import apply_path_overrides
+
+    # --index is an alias for --index-path
+    index_override = args.index_path or args.index
+    apply_path_overrides(
+        cfg,
+        data_dir=args.data_dir,
+        cache_dir=args.cache_dir,
+        index_path=index_override,
+        output_dir=args.output_dir,
+        submission_dir=args.submission_dir,
+        zip_path=args.zip_path,
+        report_out=args.out,
+    )
 
     if args.use_gasbench:
-        model_dir = Path(args.model_dir or cfg.get("model_dir") or ROOT / "submission")
+        model_dir = Path(
+            args.model_dir
+            or cfg.get("model_dir")
+            or (cfg.get("export") or {}).get("submission_dir")
+            or ROOT / "submission"
+        )
         mode = args.mode or cfg.get("mode") or "small"
         result = run_gasbench(model_dir, mode)
         result["exam_gate"] = check_exam_gate(result) if mode == "small" else None
-        out = Path(args.out or cfg.get("out") or ROOT / "runs/eval_local_result.json")
+        out = Path(cfg.get("out") or ROOT / "runs/eval_local_result.json")
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(result, indent=2), encoding="utf-8")
         print(json.dumps(result, indent=2))
@@ -166,10 +190,21 @@ def main():
 
     from src.eval.score_model import score_submission, write_report
 
-    model_dir = Path(args.model_dir or cfg.get("model_dir") or ROOT / "submission").expanduser()
-    index_path = Path(args.index or cfg.get("index_path")).expanduser()
+    model_dir = Path(
+        args.model_dir
+        or cfg.get("model_dir")
+        or (cfg.get("export") or {}).get("submission_dir")
+        or ROOT / "submission"
+    ).expanduser()
+    if not cfg.get("index_path"):
+        raise SystemExit("No index_path: pass --data-dir / --index-path or set it in the config")
+    index_path = Path(cfg.get("index_path")).expanduser()
     mode = args.mode or cfg.get("mode") or "small"
     king = args.king_sn34 if args.king_sn34 is not None else cfg.get("king_sn34")
+    print(
+        f"Paths: model_dir={model_dir} index_path={index_path}",
+        flush=True,
+    )
     report = score_submission(
         model_dir=model_dir,
         index_path=index_path,
@@ -183,7 +218,7 @@ def main():
     )
     summary = {k: v for k, v in report.items() if k != "per_dataset"}
     summary["n_datasets_scored"] = len(report.get("per_dataset") or {})
-    out = Path(args.out or cfg.get("out") or ROOT / "runs/local_sn34_report.json")
+    out = Path(cfg.get("out") or ROOT / "runs/local_sn34_report.json")
     write_report(report, out)
     print(json.dumps(summary, indent=2))
     print(f"Full report: {out}")
