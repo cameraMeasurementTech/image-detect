@@ -22,7 +22,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 from safetensors.torch import load_file
-from transformers import AutoModelForImageClassification
+from transformers import AutoConfig, AutoModelForImageClassification
 
 
 class Uint8Classifier(nn.Module):
@@ -58,13 +58,12 @@ def load_model(weights_path: str, num_classes: int = 3, **kwargs) -> nn.Module:
     mean = kwargs.get("mean", [0.485, 0.456, 0.406])
     std = kwargs.get("std", [0.229, 0.224, 0.225])
 
-    # Offline: load architecture from local config.json in the submission dir
-    backbone = AutoModelForImageClassification.from_pretrained(
-        str(model_dir),
-        num_labels=int(num_classes),
-        local_files_only=True,
-        ignore_mismatched_sizes=True,
-    )
+    # Architecture from local config.json only — weights come from safetensors below
+    # (avoids transformers trying to load wrapper-prefixed keys as a HF checkpoint).
+    cfg = AutoConfig.from_pretrained(str(model_dir), local_files_only=True)
+    cfg.num_labels = int(num_classes)
+    backbone = AutoModelForImageClassification.from_config(cfg)
+
     state = load_file(weights_path)
     cleaned = {}
     for k, v in state.items():
@@ -72,7 +71,10 @@ def load_model(weights_path: str, num_classes: int = 3, **kwargs) -> nn.Module:
             continue
         nk = k[len("backbone."):] if k.startswith("backbone.") else k
         cleaned[nk] = v
-    backbone.load_state_dict(cleaned, strict=False)
+    missing, unexpected = backbone.load_state_dict(cleaned, strict=False)
+    # classifier is randomly init if missing; mean/std handled on wrapper
+    _ = missing, unexpected
+
     model = Uint8Classifier(backbone, mean=mean, std=std, temperature=temperature)
     if "mean" in state:
         with torch.no_grad():
@@ -108,7 +110,7 @@ def export_submission(
     out.mkdir(parents=True, exist_ok=True)
 
     backbone = _unwrap_backbone(model)
-    # Persist HF config for offline from_pretrained(local_dir)
+    # Persist HF config.json only (no weight file) for offline from_config()
     if hasattr(backbone, "config"):
         cfg = backbone.config
         if hasattr(cfg, "num_labels"):
@@ -153,17 +155,6 @@ def export_submission(
         yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
     )
     (out / "model.py").write_text(MODEL_PY, encoding="utf-8")
-
-    # Also save a pytorch_model.bin-compatible path via transformers save for robustness
-    try:
-        backbone.save_pretrained(out, safe_serialization=True)
-        # ensure our fine-tuned safetensors name remains model.safetensors
-        alt = out / "model.safetensors"
-        # If save_pretrained wrote model.safetensors already with backbone-only keys,
-        # overwrite with wrapper-aware dict again
-        save_file(sd, str(alt))
-    except Exception:
-        pass
 
     if zip_path is not None:
         zpath = Path(zip_path)

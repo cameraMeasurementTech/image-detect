@@ -120,3 +120,57 @@ def build_export_wrapper(
     std=IMAGENET_STD,
 ) -> Uint8ImageClassifier:
     return Uint8ImageClassifier(backbone, mean=mean, std=std, temperature=temperature)
+
+
+class BinaryLogitLift(nn.Module):
+    """Lift a 1- or 2-logit backbone to 3-class logits (migration helper).
+
+    Prefer replacing the head with num_classes=3 and training; this exists for
+    probing / warm-start only.
+    """
+
+    def __init__(self, backbone: nn.Module, in_logits: int = 1):
+        super().__init__()
+        if in_logits not in (1, 2):
+            raise ValueError("in_logits must be 1 or 2")
+        self.backbone = backbone
+        self.in_logits = int(in_logits)
+        self.lift = nn.Linear(1, 3)
+
+    def forward(self, pixel_values: torch.Tensor = None, x: torch.Tensor = None, **kwargs):
+        inp = pixel_values if pixel_values is not None else x
+        out = self.backbone(pixel_values=inp) if _expects_pixel_values(self.backbone) else self.backbone(inp)
+        y = out.logits if hasattr(out, "logits") else out
+        if y.ndim == 1:
+            y = y.unsqueeze(-1)
+        if y.shape[-1] == 2:
+            y = (y[:, 1:2] - y[:, 0:1]).contiguous()
+        elif y.shape[-1] != 1:
+            raise RuntimeError(f"BinaryLogitLift expected 1 or 2 logits, got {tuple(y.shape)}")
+        return type("Out", (), {"logits": self.lift(y)})()
+
+
+def adapt_backbone_for_sn34(
+    backbone: nn.Module,
+    *,
+    num_classes: int = 3,
+    temperature: float = 1.0,
+    mean=IMAGENET_MEAN,
+    std=IMAGENET_STD,
+) -> Uint8ImageClassifier:
+    """Ensure 3-class logits + uint8 NCHW forward for gasbench.
+
+    - If ``backbone`` already has ``config.num_labels == 3`` (or returns [B,3]),
+      only the uint8 wrapper is applied.
+    - If it returns 1–2 logits, wraps with :class:`BinaryLogitLift` first.
+    """
+    n = getattr(getattr(backbone, "config", None), "num_labels", None)
+    core: nn.Module = backbone
+    if n is not None and int(n) in (1, 2):
+        core = BinaryLogitLift(backbone, in_logits=int(n))
+    elif n is not None and int(n) != int(num_classes):
+        raise ValueError(
+            f"backbone num_labels={n}; rebuild with num_labels={num_classes} "
+            "(ignore_mismatched_sizes=True) or use BinaryLogitLift for 1/2-way heads"
+        )
+    return build_export_wrapper(core, temperature=temperature, mean=mean, std=std)

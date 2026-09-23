@@ -58,6 +58,11 @@ python scripts/build_index.py --summarize-only --data-dir "$DATA"
 # Smoke tests (metrics / split / export)
 python scripts/smoke_test.py
 
+# Gate check on the HF backbone (no dataset download) — package / sandbox / uint8 I/O
+python scripts/probe_base_inference.py --config configs/train_vit_phase1.yaml
+python scripts/check_gates.py --config configs/train_vit_phase1.yaml \
+  --keep-probe-dir "$DATA/submission_probe"
+# See docs/Architecture-IO-Adapter.md if the base model fails I/O.
 # Phase 1 — smoke train on a few datasets
 python -m src.train --config configs/train_vit_phase1.yaml \
   --data-dir "$DATA" \
