@@ -3,8 +3,8 @@
 experiment_name: convnext_phase3
 seed: 42
 
-cache_dir: ~/.cache/sn34-miner/image
-index_path: ~/.cache/sn34-miner/image/index.jsonl
+cache_dir: /mnt/sn34
+index_path: /mnt/sn34/index.jsonl
 
 registries:
   - https://raw.githubusercontent.com/BitMind-AI/gasbench/main/src/gasbench/dataset/configs/real_images.yaml
@@ -42,7 +42,7 @@ data:
   robustness_aug_prob: 0.5
 
 train:
-  output_dir: runs/convnext_phase3
+  output_dir: /mnt/sn34/runs/convnext_phase3
   num_epochs: 6
   train_batch_size: 16
   eval_batch_size: 32
@@ -57,11 +57,17 @@ train:
   push_margin: 0.015
 
 export:
-  submission_dir: submission
-  zip_path: submission/image_detector.zip
+  submission_dir: /mnt/sn34/submission
+  zip_path: /mnt/sn34/submission/image_detector.zip
   resize: [224, 224]
 
 eval:
   gasbench_cmd: gasbench
   small_timeout_s: 5100
   full_timeout_s: 18000
+
+chunk:
+  budget_tib: 2.5
+  epochs_per_chunk: 3
+  skip_gasstation: false
+  avg_stream_image_bytes: 256000

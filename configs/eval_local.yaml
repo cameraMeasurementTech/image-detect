@@ -1,8 +1,8 @@
 # Local SN34 image eval (gasbench-equivalent scoring on a local index).
 # Private holdouts are not available; this is an upper bound on the network bench.
 
-index_path: ~/.cache/sn34-miner/image/index.jsonl
-model_dir: submission
+index_path: /mnt/sn34/index.jsonl
+model_dir: /mnt/sn34/submission
 
 # small = <=100 images per dataset (entrance-exam analogue, pass if accuracy >= 0.80)
 # full  = every indexed image
@@ -23,4 +23,4 @@ shares:
 king_sn34: null
 koth_margin: 0.01
 
-out: runs/local_sn34_report.json
+out: /mnt/sn34/runs/local_sn34_report.json

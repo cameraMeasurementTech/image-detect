@@ -5,8 +5,10 @@
 experiment_name: vit_phase1_public
 seed: 42
 
-cache_dir: ~/.cache/sn34-miner/image
-index_path: ~/.cache/sn34-miner/image/index.jsonl
+# External volume (3 TB): all downloads + index live here. Override with --data-dir
+# or SN34_DATA_ROOT. Do not use ~/.cache for train data.
+cache_dir: /mnt/sn34
+index_path: /mnt/sn34/index.jsonl
 manifest_dir: configs/manifests
 
 # Gasbench registry YAMLs (fetched if missing)
@@ -39,7 +41,7 @@ data:
   robustness_aug_prob: 0.0
 
 train:
-  output_dir: runs/vit_phase1
+  output_dir: /mnt/sn34/runs/vit_phase1
   num_epochs: 5
   train_batch_size: 32
   eval_batch_size: 64
@@ -51,8 +53,8 @@ train:
   metric_for_best: sn34_score
 
 export:
-  submission_dir: submission
-  zip_path: submission/image_detector.zip
+  submission_dir: /mnt/sn34/submission
+  zip_path: /mnt/sn34/submission/image_detector.zip
   resize: [224, 224]
 
 eval:

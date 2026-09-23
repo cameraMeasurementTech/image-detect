@@ -43,6 +43,35 @@ See [Chunked training (3 TB disk)](#chunked-training-3-tb-disk) below.
 
 Phase 3 (`facebook/convnext-base-224-22k`, batch 16) is a similar single **16–24 GB** GPU. Enabling the two-branch ensemble roughly doubles activation memory; use a **24 GB** card or train branches one at a time.
 
+## External storage (`/mnt/sn34`)
+
+**All train datasets, indexes, runs, and submission zips default to `/mnt/sn34`.**
+Override with `SN34_DATA_ROOT` or `--data-dir` if your volume is mounted elsewhere under `/mnt`.
+
+```text
+/mnt/sn34/
+  hf/                  # downloaded HF dataset snapshots (chunked; deleted after each chunk)
+  yaml/                # gasbench registry YAMLs
+  hf_datasets/         # HuggingFace datasets cache
+  .hf_home/            # hub / transformers weights cache
+  index.jsonl          # current chunk sample index
+  repo_sizes.json      # HF size catalog
+  runs/vit_phase1/     # checkpoints + chunk_state.json
+  submission/          # model_config.yaml, model.py, image_detector.zip
+```
+
+```bash
+# Mount your 3 TB disk at /mnt (or bind-mount to /mnt/sn34), then:
+export SN34_DATA_ROOT=/mnt/sn34   # optional; this is already the default
+mkdir -p /mnt/sn34
+df -h /mnt/sn34
+
+# No --data-dir needed — configs and CLI default to /mnt/sn34
+python scripts/plan_chunks.py --config configs/train_vit_phase1.yaml --budget-tib 2.5 --refresh-sizes
+python -m src.train_chunked --config configs/train_vit_phase1.yaml --budget-tib 2.5
+# Or: bash scripts/run_chunked_phase1.sh
+```
+
 ## Chunked training (3 TB disk)
 
 Public gasbench image repos sum to **~15 TiB**. This pipeline packs them into ordered chunks of **≤ 2.5 TiB** of data so you keep ~0.5 TiB free for checkpoints, the model zip, and OS overhead on a 3 TB disk.
@@ -50,41 +79,22 @@ Public gasbench image repos sum to **~15 TiB**. This pipeline packs them into or
 Repos larger than 2.5 TiB alone (e.g. OpenFake ~6 TiB) are never fully mirrored: they use **stream_cap** (extract ≤ `max_per_source` images).
 
 ```bash
-DATA=/mnt/data/sn34          # your ≤3 TB volume
-mkdir -p "$DATA" "$DATA/runs/vit_phase1" "$DATA/submission"
-
-# 1) Preview how many chunks / peak disk (queries HF sizes once, caches them)
+# Preview plan (sizes cached at /mnt/sn34/repo_sizes.json)
 python scripts/plan_chunks.py --config configs/train_vit_phase1.yaml \
-  --data-dir "$DATA" --output-dir "$DATA/runs/vit_phase1" \
   --budget-tib 2.5 --refresh-sizes
 
-# 2) Run chunked loop: download chunk → train (resume) → delete data → next
-python -m src.train_chunked --config configs/train_vit_phase1.yaml \
-  --data-dir "$DATA" \
-  --output-dir "$DATA/runs/vit_phase1" \
-  --submission-dir "$DATA/submission" \
-  --zip-path "$DATA/submission/image_detector.zip" \
-  --budget-tib 2.5
+# Download chunk → train (resume) → delete data → next (all under /mnt/sn34)
+python -m src.train_chunked --config configs/train_vit_phase1.yaml --budget-tib 2.5
 
 # Optional controls
-python -m src.train_chunked ... --dry-run              # plan only
-python -m src.train_chunked ... --max-chunks 1         # one chunk then stop
-python -m src.train_chunked ... --only-chunk 0         # re-run chunk 0
-python -m src.train_chunked ... --start-chunk 2        # skip 0..1
-python -m src.train_chunked ... --keep-data            # do not delete after train (debug)
+python -m src.train_chunked ... --dry-run
+python -m src.train_chunked ... --max-chunks 1
+python -m src.train_chunked ... --only-chunk 0
+python -m src.train_chunked ... --start-chunk 2
+python -m src.train_chunked ... --keep-data
 ```
 
-State files (under `--output-dir`):
-
-| File | Role |
-|------|------|
-| `chunk_plan.json` | Repo packing for the budget |
-| `chunk_state.json` | Completed chunk ids + rolling `best.pt` path |
-| `chunk_XXX/best.pt` | Per-chunk checkpoint |
-| `best.pt` | Latest rolling weights (next chunk resumes from here) |
-| `$DATA/repo_sizes.json` | Cached HF `used_storage` catalog |
-
-After all chunks finish, evaluate / push as usual with `--model-dir "$DATA/submission"`.
+State files under `/mnt/sn34/runs/vit_phase1/`: `chunk_plan.json`, `chunk_state.json`, rolling `best.pt`.
 
 ## Quick start
 
@@ -93,87 +103,52 @@ cd /home/ai-image-detection
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# Pick where everything lands (downloads, index, runs, submission zip)
-DATA=/mnt/data/sn34          # change to any path you own
-mkdir -p "$DATA" "$DATA/runs" "$DATA/submission"
+# External 3 TB volume must be available at /mnt/sn34 (or set SN34_DATA_ROOT)
+mkdir -p /mnt/sn34 && df -h /mnt/sn34
 
 # Registry summary (no download)
-python scripts/build_index.py --summarize-only --data-dir "$DATA"
+python scripts/build_index.py --summarize-only
 
-# Smoke tests (metrics / split / export)
+# Smoke tests / gate check
 python scripts/smoke_test.py
-
-# Gate check on the HF backbone (no dataset download) — package / sandbox / uint8 I/O
 python scripts/probe_base_inference.py --config configs/train_vit_phase1.yaml
 python scripts/check_gates.py --config configs/train_vit_phase1.yaml \
-  --keep-probe-dir "$DATA/submission_probe"
-# See docs/Architecture-IO-Adapter.md if the base model fails I/O.
-# Phase 1 — smoke train on a few datasets
-python -m src.train --config configs/train_vit_phase1.yaml \
-  --data-dir "$DATA" \
-  --output-dir "$DATA/runs/vit_phase1" \
-  --submission-dir "$DATA/submission" \
-  --zip-path "$DATA/submission/image_detector.zip" \
-  --dataset-limit 4 --max-per-source 64 --rebuild-index
+  --keep-probe-dir /mnt/sn34/submission_probe
 
-# Phase 1 — full public registries via 2.5 TiB chunks (3 TB disk)
-python -m src.train_chunked --config configs/train_vit_phase1.yaml \
-  --data-dir "$DATA" --output-dir "$DATA/runs/vit_phase1" \
-  --submission-dir "$DATA/submission" \
-  --zip-path "$DATA/submission/image_detector.zip" \
-  --budget-tib 2.5
+# Phase 1 — chunked train on /mnt/sn34 (2.5 TiB / chunk)
+python -m src.train_chunked --config configs/train_vit_phase1.yaml --budget-tib 2.5
+# Or: bash scripts/run_chunked_phase1.sh
 
-# Phase 1 — single-shot train (only if you have >>15 TiB free; not for 3 TB disks)
-# python -m src.train --config configs/train_vit_phase1.yaml \
-#   --data-dir "$DATA" --output-dir "$DATA/runs/vit_phase1" --rebuild-index
+# Local eval (reads index + submission from /mnt/sn34)
+python -m src.eval_local --config configs/eval_local.yaml --mode small
+python -m src.eval_local --config configs/eval_local.yaml --mode full
 
-# Phase 2 — + GAS-Station + robustness augs
-python -m src.train --config configs/train_vit_phase2.yaml \
-  --data-dir "$DATA" --output-dir "$DATA/runs/vit_phase2" --rebuild-index
+# Push
+python scripts/push_model.py --zip /mnt/sn34/submission/image_detector.zip --require-push-ready
+```
 
-# Phase 3 — ConvNeXt / stronger backbone
-python -m src.train --config configs/train_ensemble_phase3.yaml \
-  --data-dir "$DATA" --output-dir "$DATA/runs/convnext_phase3" --rebuild-index
+If your disk is mounted at another path:
 
-# Local gasbench gates (same index / model paths)
-python -m src.eval_local --config configs/eval_local.yaml \
-  --data-dir "$DATA" --model-dir "$DATA/submission" --mode small \
-  --out "$DATA/runs/local_sn34_small.json"
-python -m src.eval_local --config configs/eval_local.yaml \
-  --data-dir "$DATA" --model-dir "$DATA/submission" --mode full \
-  --out "$DATA/runs/local_sn34_full.json"
-
-# Optional: the upstream gasbench CLI, if installed
-python -m src.eval_local --use-gasbench --mode small --model-dir "$DATA/submission"
-
-# Push when local proxy clears king + margin (set king_sn34_score in config)
-python scripts/push_model.py --zip "$DATA/submission/image_detector.zip" --require-push-ready
+```bash
+export SN34_DATA_ROOT=/mnt/mydisk/sn34
+# or pass --data-dir /mnt/mydisk/sn34 on every command
 ```
 
 ## Where data is saved
 
-Every download / index / train / eval command accepts path flags (CLI overrides YAML):
+Default root: **`/mnt/sn34`** (`SN34_DATA_ROOT` or `--data-dir` to override).
 
 | Flag | What it controls |
 |------|------------------|
-| `--data-dir DIR` | Root for HF downloads + default `DIR/index.jsonl` |
-| `--cache-dir DIR` | Download cache only (overrides `--data-dir` for cache) |
-| `--index-path FILE` | Sample index JSONL read/write path |
-| `--output-dir DIR` | Checkpoints + `train_result.json` |
-| `--submission-dir DIR` | Exported `model_config.yaml` / `model.py` / weights |
-| `--zip-path FILE` | Packed `image_detector.zip` |
-| `--out FILE` | Eval report JSON (`eval_local` only) |
+| `--data-dir DIR` | Root for HF downloads, index, runs, submission (default `/mnt/sn34`) |
+| `--cache-dir DIR` | Download cache only (defaults to `--data-dir`) |
+| `--index-path FILE` | Sample index JSONL |
+| `--output-dir DIR` | Checkpoints / `train_result.json` |
+| `--submission-dir DIR` | Export dir |
+| `--zip-path FILE` | Submission zip |
+| `--out FILE` | Eval report JSON |
 
-`--data-dir /path` alone is enough for most workflows:
-
-```text
-/path/
-  hf/ ...          # HuggingFace dataset cache
-  yaml/ ...        # registry YAML cache
-  index.jsonl      # sample index
-```
-
-Then point train/eval outputs separately with `--output-dir`, `--submission-dir`, `--zip-path`, and `--out`.
+HF hub / transformers / datasets caches are also redirected under `/mnt/sn34/.hf_home` and `/mnt/sn34/hf_datasets` so nothing large lands in `~/.cache`.
 ## Layout
 
 ```
