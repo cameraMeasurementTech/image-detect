@@ -37,9 +37,54 @@ Wall-clock (order of magnitude, one GPU, cap `max_per_source: 2000` on ~220 sour
 - 24 GB consumer GPU (4090-class): roughly **half a day to a day**
 - 16 GB datacenter GPU (T4-class): roughly **1–2 days**
 
-Disk is separate from VRAM: full Hugging Face registry downloads can be **hundreds of GB**. Cache lives under `~/.cache/sn34-miner/image`.
+Disk is separate from VRAM: a **naive full Hub mirror of all registries is ~15 TiB**.
+On a **3 TB** volume use **chunked training** (download ≤2.5 TiB → train → delete → next chunk).
+See [Chunked training (3 TB disk)](#chunked-training-3-tb-disk) below.
 
 Phase 3 (`facebook/convnext-base-224-22k`, batch 16) is a similar single **16–24 GB** GPU. Enabling the two-branch ensemble roughly doubles activation memory; use a **24 GB** card or train branches one at a time.
+
+## Chunked training (3 TB disk)
+
+Public gasbench image repos sum to **~15 TiB**. This pipeline packs them into ordered chunks of **≤ 2.5 TiB** of data so you keep ~0.5 TiB free for checkpoints, the model zip, and OS overhead on a 3 TB disk.
+
+Repos larger than 2.5 TiB alone (e.g. OpenFake ~6 TiB) are never fully mirrored: they use **stream_cap** (extract ≤ `max_per_source` images).
+
+```bash
+DATA=/mnt/data/sn34          # your ≤3 TB volume
+mkdir -p "$DATA" "$DATA/runs/vit_phase1" "$DATA/submission"
+
+# 1) Preview how many chunks / peak disk (queries HF sizes once, caches them)
+python scripts/plan_chunks.py --config configs/train_vit_phase1.yaml \
+  --data-dir "$DATA" --output-dir "$DATA/runs/vit_phase1" \
+  --budget-tib 2.5 --refresh-sizes
+
+# 2) Run chunked loop: download chunk → train (resume) → delete data → next
+python -m src.train_chunked --config configs/train_vit_phase1.yaml \
+  --data-dir "$DATA" \
+  --output-dir "$DATA/runs/vit_phase1" \
+  --submission-dir "$DATA/submission" \
+  --zip-path "$DATA/submission/image_detector.zip" \
+  --budget-tib 2.5
+
+# Optional controls
+python -m src.train_chunked ... --dry-run              # plan only
+python -m src.train_chunked ... --max-chunks 1         # one chunk then stop
+python -m src.train_chunked ... --only-chunk 0         # re-run chunk 0
+python -m src.train_chunked ... --start-chunk 2        # skip 0..1
+python -m src.train_chunked ... --keep-data            # do not delete after train (debug)
+```
+
+State files (under `--output-dir`):
+
+| File | Role |
+|------|------|
+| `chunk_plan.json` | Repo packing for the budget |
+| `chunk_state.json` | Completed chunk ids + rolling `best.pt` path |
+| `chunk_XXX/best.pt` | Per-chunk checkpoint |
+| `best.pt` | Latest rolling weights (next chunk resumes from here) |
+| `$DATA/repo_sizes.json` | Cached HF `used_storage` catalog |
+
+After all chunks finish, evaluate / push as usual with `--model-dir "$DATA/submission"`.
 
 ## Quick start
 
@@ -71,9 +116,16 @@ python -m src.train --config configs/train_vit_phase1.yaml \
   --zip-path "$DATA/submission/image_detector.zip" \
   --dataset-limit 4 --max-per-source 64 --rebuild-index
 
-# Phase 1 — full public registries (long; large disk/bandwidth)
-python -m src.train --config configs/train_vit_phase1.yaml \
-  --data-dir "$DATA" --output-dir "$DATA/runs/vit_phase1" --rebuild-index
+# Phase 1 — full public registries via 2.5 TiB chunks (3 TB disk)
+python -m src.train_chunked --config configs/train_vit_phase1.yaml \
+  --data-dir "$DATA" --output-dir "$DATA/runs/vit_phase1" \
+  --submission-dir "$DATA/submission" \
+  --zip-path "$DATA/submission/image_detector.zip" \
+  --budget-tib 2.5
+
+# Phase 1 — single-shot train (only if you have >>15 TiB free; not for 3 TB disks)
+# python -m src.train --config configs/train_vit_phase1.yaml \
+#   --data-dir "$DATA" --output-dir "$DATA/runs/vit_phase1" --rebuild-index
 
 # Phase 2 — + GAS-Station + robustness augs
 python -m src.train --config configs/train_vit_phase2.yaml \
@@ -125,13 +177,11 @@ Then point train/eval outputs separately with `--output-dir`, `--submission-dir`
 ## Layout
 
 ```
-configs/           train_vit_phase1.yaml, phase2, phase3
-src/data/          YAML index, HF download, split, augs, dataset
-src/metrics/       sn34_score (Gorodkin MCC × Brier)
-src/models/        ViT/ConvNeXt/ensemble + safetensors export
-src/train.py       main training loop
-src/eval_local.py  gasbench --small/--full + king margin helper
-scripts/           build_index, smoke_test, push_model
+configs/           train_vit_phase1.yaml (+ chunk:), phase2, phase3
+src/data/          YAML index, HF download, chunk_plan, split, augs
+src/train.py       single-shot training loop
+src/train_chunked.py  download→train→delete under disk budget
+scripts/           plan_chunks, build_index, smoke_test, push_model, check_gates
 submission/        built zip contents after train
 ```
 

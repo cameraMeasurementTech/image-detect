@@ -197,6 +197,44 @@ def _extract_from_hf_dataset(
     return saved
 
 
+def hf_local_dir(cache_dir: Union[str, Path], repo_id: str) -> Path:
+    return expand_cache_dir(cache_dir) / "hf" / repo_id.replace("/", "__")
+
+
+def delete_repo_cache(cache_dir: Union[str, Path], repo_id: str) -> bool:
+    """Remove a downloaded HF dataset directory. Returns True if something was deleted."""
+    import shutil
+
+    root = hf_local_dir(cache_dir, repo_id)
+    if root.exists():
+        shutil.rmtree(root, ignore_errors=True)
+        logger.info("Deleted dataset cache %s", root)
+        return True
+    return False
+
+
+def delete_repo_caches(cache_dir: Union[str, Path], repo_ids: Sequence[str]) -> int:
+    n = 0
+    for rid in repo_ids:
+        if delete_repo_cache(cache_dir, rid):
+            n += 1
+    return n
+
+
+def dir_size_bytes(path: Union[str, Path]) -> int:
+    root = Path(path)
+    if not root.exists():
+        return 0
+    total = 0
+    for p in root.rglob("*"):
+        if p.is_file():
+            try:
+                total += p.stat().st_size
+            except OSError:
+                continue
+    return total
+
+
 def build_public_index(
     cache_dir: Union[str, Path],
     index_path: Union[str, Path],
@@ -207,8 +245,14 @@ def build_public_index(
     skip_gasstation_in_registry: bool = True,
     dataset_allowlist: Optional[Sequence[str]] = None,
     dataset_limit: Optional[int] = None,
+    repo_allowlist: Optional[Sequence[str]] = None,
+    stream_only_repos: Optional[Sequence[str]] = None,
 ) -> List[IndexedSample]:
-    """Download (optional) and index public gasbench image registries."""
+    """Download (optional) and index public gasbench image registries.
+
+    ``repo_allowlist``: only these HuggingFace ``path`` ids.
+    ``stream_only_repos``: never snapshot_download; stream/extract ``max_per_source`` images.
+    """
     cache = expand_cache_dir(cache_dir)
     cache.mkdir(parents=True, exist_ok=True)
     yaml_cache = cache / "yaml"
@@ -217,14 +261,19 @@ def build_public_index(
     if dataset_allowlist:
         allow = set(dataset_allowlist)
         entries = [e for e in entries if e.name in allow]
+    if repo_allowlist is not None:
+        allow_repos = set(repo_allowlist)
+        entries = [e for e in entries if e.path in allow_repos]
     if dataset_limit is not None:
         entries = entries[: dataset_limit]
 
+    stream_set = set(stream_only_repos or [])
     rng = random.Random(seed)
     samples: List[IndexedSample] = []
     for entry in entries:
-        local_root = cache / "hf" / entry.path.replace("/", "__")
-        if download:
+        local_root = hf_local_dir(cache, entry.path)
+        stream_only = entry.path in stream_set
+        if download and not stream_only:
             patterns = _allow_patterns_for_entry(entry)
             # Cap download volume for large repos by preferring image patterns
             if patterns is None and max_per_source > 0:
@@ -244,13 +293,22 @@ def build_public_index(
                 revision=entry.hf_revision,
                 allow_patterns=patterns,
             )
+        elif stream_only:
+            logger.info(
+                "stream_cap %s: extracting up to %d images (no full snapshot)",
+                entry.path,
+                max_per_source,
+            )
+            local_root.mkdir(parents=True, exist_ok=True)
+
         entry_samples = index_entry_images(entry, local_root, max_per_source, rng)
         logger.info(
-            "Indexed %s (%s): %d images label=%d",
+            "Indexed %s (%s): %d images label=%d%s",
             entry.name,
             entry.path,
             len(entry_samples),
             entry.label,
+            " [stream_cap]" if stream_only else "",
         )
         samples.extend(entry_samples)
 

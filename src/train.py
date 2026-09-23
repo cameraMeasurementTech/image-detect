@@ -63,10 +63,12 @@ def ensure_index(cfg: Dict[str, Any], force_rebuild: bool = False) -> Path:
         skip_gasstation_in_registry=True,
         dataset_allowlist=cfg.get("data", {}).get("dataset_allowlist"),
         dataset_limit=cfg.get("data", {}).get("dataset_limit"),
+        repo_allowlist=cfg.get("data", {}).get("repo_allowlist"),
+        stream_only_repos=cfg.get("data", {}).get("stream_only_repos"),
     )
 
     gs = cfg.get("gas_station") or {}
-    if gs.get("enabled"):
+    if gs.get("enabled") and not cfg.get("data", {}).get("repo_allowlist"):
         gs_samples = index_gas_station(
             cache_dir=cache_dir,
             repo_id=gs.get("path", "gasstation/gs-images-v4"),
@@ -167,6 +169,23 @@ def train_loop(cfg: Dict[str, Any], rebuild_index: bool = False) -> Dict[str, An
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = build_train_model(cfg).to(device)
+    resume_from = train_cfg.get("resume_from")
+    if resume_from:
+        resume_path = Path(str(resume_from)).expanduser()
+        if resume_path.is_file():
+            ckpt0 = torch.load(resume_path, map_location="cpu")
+            state = ckpt0.get("model", ckpt0)
+            missing, unexpected = model.load_state_dict(state, strict=False)
+            logger.info(
+                "Resumed weights from %s (missing=%d unexpected=%d)",
+                resume_path,
+                len(missing),
+                len(unexpected),
+            )
+            model.to(device)
+        else:
+            logger.warning("resume_from not found: %s", resume_path)
+
     label_smoothing = float(model_cfg.get("label_smoothing", 0.0))
     criterion = torch.nn.CrossEntropyLoss(label_smoothing=label_smoothing)
     opt = torch.optim.AdamW(

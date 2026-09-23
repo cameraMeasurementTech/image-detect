@@ -59,3 +59,12 @@ eval:
   gasbench_cmd: gasbench
   small_timeout_s: 5100
   full_timeout_s: 18000
+
+# Disk-budgeted training (3 TB volume → keep ~2.5 TiB data resident at a time).
+# Use: python -m src.train_chunked --config configs/train_vit_phase1.yaml --data-dir "$DATA"
+chunk:
+  budget_tib: 2.5
+  epochs_per_chunk: 3
+  skip_gasstation: true
+  # catalog_path / plan_path / state_path default under cache_dir and output_dir
+  avg_stream_image_bytes: 256000  # cost estimate for repos too large to mirror

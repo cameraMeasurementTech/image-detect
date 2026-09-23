@@ -49,7 +49,19 @@ export:
   zip_path: submission/image_detector.zip
   resize: [224, 224]
 
+chunk:
+  budget_tib: 2.5
+  epochs_per_chunk: 3
+  skip_gasstation: false   # include gs-images-v4 in packing (~283 GiB)
+  avg_stream_image_bytes: 256000
+
 eval:
   gasbench_cmd: gasbench
   small_timeout_s: 5100
   full_timeout_s: 18000
+
+chunk:
+  budget_tib: 2.5
+  epochs_per_chunk: 3
+  skip_gasstation: false
+  avg_stream_image_bytes: 256000
